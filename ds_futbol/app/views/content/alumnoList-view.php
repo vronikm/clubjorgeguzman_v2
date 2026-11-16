@@ -146,23 +146,37 @@
 						</div>
 					</div>
 					<div class="card-body">
-						<?php if ($porHorario['S'] + $porHorario['N'] > 0): ?>
-						<?php /* Con y sin horario, del resultado. Pulsar uno filtra por él;
-						         pulsar el elegido vuelve a «Todos». «Sin horario» se
-						         destaca cuando hay alguno: es lo que hay que resolver. */ ?>
-						<div class="d-flex flex-wrap align-items-center gap-2 mb-3" role="group" aria-label="Alumnos con y sin horario">
-							<span class="text-body-secondary small"><i class="far fa-clock me-1" aria-hidden="true"></i>Horario:</span>
-							<?php foreach (['S' => 'Con horario', 'N' => 'Sin horario'] as $codigo => $texto):
-								$elegido = $alumno_horario === $codigo;
-								$n       = (int)$porHorario[$codigo];
-								$clase   = $elegido ? 'btn-primary' : ($codigo === 'N' && $n > 0 ? 'btn-outline-warning ds-alumnos__chip-alerta' : 'btn-outline-secondary'); ?>
-								<button type="button" class="btn btn-sm <?php echo $clase; ?> js-horario"
-								        data-horario="<?php echo $elegido ? '' : $codigo; ?>" aria-pressed="<?php echo $elegido ? 'true' : 'false'; ?>"
-								        title="<?php echo $elegido ? 'Ver todos' : 'Ver solo ' . mb_strtolower($texto, 'UTF-8'); ?>" <?php echo $n === 0 && !$elegido ? 'disabled' : ''; ?>>
-									<?php if ($codigo === 'N'): ?><i class="fas fa-exclamation-triangle me-1" aria-hidden="true"></i><?php endif; ?>
-									<?php echo $texto; ?><span class="badge <?php echo $elegido ? 'text-bg-light' : 'text-bg-secondary'; ?> ms-1"><?php echo $n; ?></span>
-								</button>
-							<?php endforeach; ?>
+						<?php
+						/*
+						| Barra de resumen: Horario, en la MISMA fila que
+						| «Mostrar N» (DataTables la coloca ahí: layout.topStart, abajo).
+						| Antes eran dos filas sueltas encima de la tabla y «Mostrar» una
+						| tercera.
+						|
+						| Cada botón filtra con el formulario de búsqueda; pulsar el
+						| elegido vuelve a «Todos». «Sin horario» se destaca cuando hay
+						| alguno: es lo que hay que resolver.
+						*/
+						$hayHorario = $porHorario['S'] + $porHorario['N'] > 0;
+						?>
+						<?php if ($hayHorario): ?>
+						<div class="ds-alumnos__barra" id="alumnosBarra">
+							<?php if ($hayHorario): ?>
+							<div class="ds-alumnos__grupo" role="group" aria-label="Alumnos con y sin horario">
+								<span class="ds-alumnos__grupo-titulo"><i class="far fa-clock" aria-hidden="true"></i>Horario</span>
+								<?php foreach (['S' => 'Con horario', 'N' => 'Sin horario'] as $codigo => $texto):
+									$elegido = $alumno_horario === $codigo;
+									$n       = (int)$porHorario[$codigo];
+									$clase   = $elegido ? 'btn-primary' : ($codigo === 'N' && $n > 0 ? 'btn-outline-warning ds-alumnos__chip-alerta' : 'btn-outline-secondary'); ?>
+									<button type="button" class="btn btn-sm <?php echo $clase; ?> js-horario"
+									        data-horario="<?php echo $elegido ? '' : $codigo; ?>" aria-pressed="<?php echo $elegido ? 'true' : 'false'; ?>"
+									        title="<?php echo $elegido ? 'Ver todos' : 'Ver solo ' . mb_strtolower($texto, 'UTF-8'); ?>" <?php echo $n === 0 && !$elegido ? 'disabled' : ''; ?>>
+										<?php if ($codigo === 'N'): ?><i class="fas fa-exclamation-triangle me-1" aria-hidden="true"></i><?php endif; ?>
+										<?php echo $texto; ?><span class="badge <?php echo $elegido ? 'text-bg-light' : 'text-bg-secondary'; ?> ms-1"><?php echo $n; ?></span>
+									</button>
+								<?php endforeach; ?>
+							</div>
+							<?php endif; ?>
 						</div>
 						<?php endif; ?>
 						<table id="example1" class="table table-hover align-middle ds-crud__tabla" style="width:100%">
@@ -225,6 +239,11 @@
 		var CLAVE = 'ds-alumnos-por-pagina', LARGOS = [10, 25, 50, 100, -1], largo = 25;
 		try { var guardado = parseInt(localStorage.getItem(CLAVE), 10); if (LARGOS.indexOf(guardado) !== -1) { largo = guardado; } } catch (e) {}
 
+		/* «Mostrar N» y el resumen de horario en la misma fila: la barra se
+		   entrega a DataTables como un elemento más de la celda superior
+		   izquierda (layout.topStart), detrás de «Mostrar». */
+		var barra = document.getElementById('alumnosBarra');
+
 		var tabla = new DataTable("#example1", {
 			autoWidth: false,
 			pageLength: largo,
@@ -235,7 +254,7 @@
 				{ targets: 5, orderable: false, searchable: false }   /* acciones */
 			],
 			layout: {
-				topStart: 'pageLength',
+				topStart: barra ? ['pageLength', barra] : 'pageLength',
 				topEnd: 'search',
 				bottomStart: 'info',
 				bottomEnd: { paging: { firstLast: false } }
@@ -247,7 +266,7 @@
 				infoFiltered: "(de _MAX_)",
 				lengthMenu: "Mostrar _MENU_",
 				search: "",
-				searchPlaceholder: "Filtrar por nombre, cédula, sede u horario…",
+				searchPlaceholder: "Filtrar la lista…",   /* nombre, cédula, sede u horario */
 				zeroRecords: "Ningún alumno coincide con el filtro",
 				paginate: { next: "Siguiente", previous: "Anterior" },
 				aria: {
