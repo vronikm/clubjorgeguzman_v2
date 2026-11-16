@@ -1,3 +1,7 @@
 RewriteEngine On
 Options All -Indexes
 RewriteRule ^([a-zA-Z0-9/_ñÑ-]+)$ index.php?views=$1 [QSA,L]
+
+<Files "autoload.php">
+    Require all denied
+</Files>

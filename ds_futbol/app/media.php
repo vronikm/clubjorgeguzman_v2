@@ -4,7 +4,8 @@
 | Proxy de medios con datos personales
 |--------------------------------------------------------------------------
 | Sirve fotos de alumnos (menores de edad), cedulas escaneadas, fotos de
-| empleados y comprobantes de pago SOLO a usuarios con sesion activa.
+| empleados y comprobantes de pago SOLO a usuarios con sesion activa y
+| permiso sobre ese archivo (medio_autorizado(), en ds_core/inc/seguridad.php).
 |
 | Antes estas imagenes eran accesibles por URL directa sin autenticacion y,
 | como el nombre del archivo deriva de la cedula, bastaba conocerla para
@@ -69,6 +70,14 @@ $ruta = ($base === false) ? false : realpath($base . DIRECTORY_SEPARATOR . $arch
 if ($base === false || $ruta === false
     || strpos($ruta, $base . DIRECTORY_SEPARATOR) !== 0
     || !is_file($ruta)) {
+    http_response_code(404);
+    exit;
+}
+
+/*----------  4b. Permiso sobre este archivo  ----------*/
+/* 404 y no 403: la respuesta no debe revelar si existe el archivo de una
+   cédula concreta a quien no puede verlo. */
+if (!medio_autorizado($tipo, $archivo)) {
     http_response_code(404);
     exit;
 }

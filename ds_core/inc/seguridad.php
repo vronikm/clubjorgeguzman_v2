@@ -936,6 +936,130 @@ if (!function_exists('usuario_autenticado')) {
                                  . '&f=' . rawurlencode($archivo);
     }
 
+    /*----------  Quién puede ver cada medio  ----------*/
+
+    /**
+     * Pantallas de Basketball desde las que se muestra cada tipo de medio.
+     *
+     * Son pantallas de menú a propósito: las vistas de apoyo (perfil, ficha,
+     * detalle de pagos) ya están resueltas aquí a las pantallas desde las que
+     * se abren (ds_core/inc/vistas_apoyo.php). Una pantalla nueva que muestre
+     * un medio tiene que añadirse aquí, o la imagen no cargará.
+     */
+    function medios_pantallas(): array
+    {
+        return [
+            'alumno'   => ['alumnoList', 'representanteList', 'inscripcionPendientes', 'reporteAsistencia',
+                           'carnetList', 'alumnoFotos', 'cumpleaniosList', 'pagosList',
+                           'cobranzaPension', 'cobranzaUniforme'],
+            'cedula'   => ['alumnoList', 'representanteList', 'inscripcionPendientes', 'reporteAsistencia',
+                           'carnetList', 'alumnoFotos'],
+            'pago'     => ['pagosList', 'alumnoList', 'cobranzaPension', 'cobranzaUniforme', 'balanceResultados'],
+            'empleado' => ['empleadoList', 'empleadoEntrada'],
+            'ingreso'  => ['empleadoList'],
+            'fingreso' => ['ingresoList'],
+            'fegreso'  => ['egresoList'],
+        ];
+    }
+
+    /** Imágenes genéricas de cada tipo: no son datos de nadie. */
+    function medios_genericos(): array
+    {
+        return [
+            'alumno'   => ['alumno.jpg', 'alumno.png'],
+            'cedula'   => ['Sinregistro.jpg'],
+            'fingreso' => ['ingreso_default.jpg'],
+            'fegreso'  => ['egreso_default.jpg'],
+        ];
+    }
+
+    /**
+     * Consultas que dan las sedes a las que pertenece un archivo.
+     *
+     * Solo los tipos cuyas pantallas filtran por sede: los listados de
+     * empleados, ingresos y egresos no lo hacen, y exigirla aquí rompería
+     * imágenes que esos usuarios ven legítimamente.
+     *
+     * Un pago cuenta para la sede donde se cobró y para la actual del alumno,
+     * igual que los listados que lo muestran.
+     */
+    function medios_consultas_sede(): array
+    {
+        $pago = 'FROM alumno_pago p JOIN sujeto_alumno a ON a.alumno_id = p.pago_alumnoid';
+        $trx  = 'FROM alumno_pago_transaccion t JOIN alumno_pago p ON p.pago_id = t.transaccion_pagoid'
+              . ' JOIN sujeto_alumno a ON a.alumno_id = p.pago_alumnoid';
+
+        return [
+            'alumno' => ['SELECT alumno_sedeid FROM sujeto_alumno WHERE alumno_imagen = :f'],
+            'cedula' => ['SELECT alumno_sedeid FROM sujeto_alumno WHERE alumno_cedulaA = :f',
+                         'SELECT alumno_sedeid FROM sujeto_alumno WHERE alumno_cedulaR = :f'],
+            'pago'   => ["SELECT p.pago_sedeid {$pago} WHERE p.pago_archivo = :f",
+                         "SELECT a.alumno_sedeid {$pago} WHERE p.pago_archivo = :f",
+                         "SELECT p.pago_sedeid {$trx} WHERE t.transaccion_archivo = :f",
+                         "SELECT a.alumno_sedeid {$trx} WHERE t.transaccion_archivo = :f"],
+        ];
+    }
+
+    /** ¿El archivo pertenece a alguna de las sedes que puede ver la sesión? */
+    function medio_en_sedes_de_la_sesion(string $tipo, string $archivo): bool
+    {
+        $permitidas = sedes_de_la_sesion();
+        if ($permitidas === null) { return true; }
+        if (!$permitidas)         { return false; }
+
+        $con = seguridad_conexion();
+        if ($con === null) { return false; }
+
+        try {
+            foreach (medios_consultas_sede()[$tipo] as $sql) {
+                $st = $con->prepare($sql);
+                $st->execute([':f' => $archivo]);
+                foreach ($st->fetchAll(PDO::FETCH_COLUMN) as $sede) {
+                    if (in_array((int)$sede, $permitidas, true)) { return true; }
+                }
+            }
+        } catch (\Throwable $e) {
+            return false;   /* ante la duda, un dato de menores no sale */
+        }
+
+        return false;
+    }
+
+    /**
+     * ¿Puede la sesión ver este medio?
+     *
+     * Tener sesión no basta: cualquier cuenta podía pedir la cédula o el
+     * comprobante de otra persona por el nombre del archivo, que deriva de la
+     * cédula. Ahora hace falta poder abrir una pantalla que muestre ese tipo
+     * y, si el tipo va por sede, que el archivo sea de una sede de la sesión.
+     *
+     * Se mira 'permitidas' y no usuario_tiene_permiso(), que deja pasar una
+     * vista no registrada: aquí lo no concedido se deniega.
+     */
+    function medio_autorizado(string $tipo, string $archivo): bool
+    {
+        if (es_superadministrador()) { return true; }
+
+        if (in_array($archivo, medios_genericos()[$tipo] ?? [], true)) { return true; }
+
+        /* La foto propia sale en la barra superior de todos los módulos. */
+        $propia = basename((string)($_SESSION['foto'] ?? ''));
+        if ($propia !== '' && $propia === $archivo && in_array($tipo, ['empleado', 'usuario'], true)) {
+            return true;
+        }
+
+        if (!usuario_tiene_modulo('basketball')) { return false; }
+
+        $concedidas = permisos_de_la_sesion('basketball')['permitidas'];
+        $puedeVer   = false;
+        foreach (medios_pantallas()[$tipo] ?? [] as $vista) {
+            if (!empty($concedidas[$vista]['ver'])) { $puedeVer = true; break; }
+        }
+        if (!$puedeVer) { return false; }
+
+        return !isset(medios_consultas_sede()[$tipo]) || medio_en_sedes_de_la_sesion($tipo, $archivo);
+    }
+
     /*==================================================================
       Freno a los intentos de acceso
       ==================================================================

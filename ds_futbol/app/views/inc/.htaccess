@@ -1,0 +1,4 @@
+# Fragmentos que se incluyen desde otros PHP: nunca se piden directamente.
+<FilesMatch ".+\.php$">
+    Require all denied
+</FilesMatch>
