@@ -97,6 +97,7 @@ $vistas = [
      'r' => 'Cuanto dinero entro de verdad en el periodo.',
      'f' => "SUM(alumno_pago.pago_valor) WHERE pago_estado='C'\n"
           . "  + SUM(dsa_pago.pago_valor)  WHERE pago_estado='A'\n"
+          . "  - SUM(dsa_devolucion.devolucion_valor)  (lo devuelto de reservas, 092)\n"
           . "  + SUM(dsl_abono.abono_valor) WHERE abono_anulado='N'\n"
           . "  ... todos con su fecha BETWEEN desde AND hasta",
      'o' => 'Es la SUMA de los tres modulos al centimo. Si el total no cuadra con las tres '
@@ -156,7 +157,9 @@ $vistas = [
     ['n' => 'Ingresos por sede',
      'r' => 'Cuanto cobro cada sede en el periodo.',
      'f' => "SUM(alumno_pago.pago_valor) GROUP BY pago_sedeid\n"
-          . "  + SUM(dsa_pago.pago_valor) GROUP BY reserva_sedeid",
+          . "  + SUM(dsa_pago.pago_valor) GROUP BY reserva_sedeid
+"
+          . "  - SUM(dsa_devolucion.devolucion_valor) GROUP BY reserva_sedeid",
      'o' => 'Se usa la sede CONGELADA del pago, no la actual del alumno. Las sedes sin '
           . 'movimiento en el periodo no se listan: una tabla de siete filas a cero no informa.'],
 
@@ -511,6 +514,18 @@ $vistas = [
           . 'parte los importes en dos columnas, y sin BOM abre "Ocupacion" como "OcupaciA3n". '
           . 'Exportar exige su propio permiso: ver una cifra y sacarla del sistema son dos '
           . 'decisiones distintas.'],
+
+    ['n' => 'Ingresos del mes',
+     'r' => 'Cuanto se cobro a los alumnos y cuanto se gasto en el mes, por bloque y forma de pago.',
+     'f' => "pago: (pago_saldo + pago_valor) - saldo antes del 1er abono, estado C/P, por pago_fecha\n"
+          . "+ abonos alumno_pago_transaccion (estado C) por transaccion_fecha\n"
+          . "- egresos balance_egreso (estado A) por egreso_fechapago, en su egreso_rubroid/egreso_lugarid\n"
+          . "agrupado por rubro; las pensiones por pago_sedeid y lugar de entrenamiento (por nombre)",
+     'o' => 'El reporte que la escuela armaba en Excel. Cuenta el dinero que entro en el mes: '
+          . 'lo pagado al registrar el pago (pago_valor ya suma los abonos posteriores, por eso '
+          . 'no se usa tal cual) y cada abono en su propia fecha y forma de pago. Cuadra con el '
+          . 'consolidado de pagos de Futbol. El lugar de entrenamiento es el del horario actual '
+          . 'del alumno. Muestra cedulas: permiso propio (migracion 093) y queda en la auditoria.'],
 ],
 ],
 

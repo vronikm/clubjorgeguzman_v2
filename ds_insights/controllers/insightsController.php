@@ -359,10 +359,17 @@ class insightsController
                   WHERE pago_estado = 'C' AND pago_fecha BETWEEN :d AND :h"
                 . $this->sede('pago_sedeid'),
                 [':d' => $d, ':h' => $h]),
+            /* Lo cobrado menos lo devuelto en el periodo (dsa_devolucion,
+               migración 092): una reserva cancelada y devuelta no es ingreso. */
             'arena' => !insights_ve('arena') ? 0.0 : (float) $this->escalar(
                 "SELECT IFNULL(SUM(pago_valor),0) FROM dsa_pago
                   WHERE pago_estado = 'A' AND pago_fecha BETWEEN :d AND :h"
                 . $this->sedeReserva('pago_reservaid'),
+                [':d' => $d, ':h' => $h])
+              - (float) $this->escalar(
+                "SELECT IFNULL(SUM(devolucion_valor),0) FROM dsa_devolucion
+                  WHERE devolucion_fecha BETWEEN :d AND :h"
+                . $this->sedeReserva('devolucion_reservaid'),
                 [':d' => $d, ':h' => $h]),
             'league' => !insights_ve('league') ? 0.0 : (float) $this->escalar(
                 "SELECT IFNULL(SUM(abono_valor),0) FROM dsl_abono
@@ -507,6 +514,11 @@ class insightsController
                     AND pago_fecha BETWEEN :d2 AND :h2"
                      . $this->sedeReserva("pago_reservaid") . " GROUP BY 1";
             $params += [':d2' => $desde, ':h2' => $hasta];
+            /* Lo devuelto resta en el mes en que se devolvió (092). */
+            $ramas[] = "SELECT DATE_FORMAT(devolucion_fecha,'%Y-%m') mes, 0 bk, -SUM(devolucion_valor) ar, 0 lg
+                   FROM dsa_devolucion WHERE devolucion_fecha BETWEEN :d4 AND :h4"
+                     . $this->sedeReserva("devolucion_reservaid") . " GROUP BY 1";
+            $params += [':d4' => $desde, ':h4' => $hasta];
         }
         if (insights_ve('league')) {
             $ramas[] = "SELECT DATE_FORMAT(abono_fecha,'%Y-%m') mes, 0 bk, 0 ar, SUM(abono_valor) lg
@@ -765,15 +777,23 @@ class insightsController
                             FROM alumno_pago
                            WHERE pago_estado = 'C' AND pago_fecha BETWEEN :d1 AND :h1
                            GROUP BY pago_sedeid) bk ON bk.sede = s.sede_id
-               LEFT JOIN (SELECT reserva_sedeid sede, SUM(p.pago_valor) v
-                            FROM dsa_pago p
-                            JOIN dsa_reserva r ON r.reserva_id = p.pago_reservaid
-                           WHERE p.pago_estado = 'A' AND p.pago_fecha BETWEEN :d2 AND :h2
-                           GROUP BY reserva_sedeid) ar ON ar.sede = s.sede_id
+               LEFT JOIN (SELECT sede, SUM(v) v FROM (
+                              SELECT r.reserva_sedeid sede, p.pago_valor v
+                                FROM dsa_pago p
+                                JOIN dsa_reserva r ON r.reserva_id = p.pago_reservaid
+                               WHERE p.pago_estado = 'A' AND p.pago_fecha BETWEEN :d2 AND :h2
+                              UNION ALL
+                              /* Lo devuelto en el periodo resta (migración 092). */
+                              SELECT r.reserva_sedeid, -d.devolucion_valor
+                                FROM dsa_devolucion d
+                                JOIN dsa_reserva r ON r.reserva_id = d.devolucion_reservaid
+                               WHERE d.devolucion_fecha BETWEEN :d3 AND :h3) x
+                           GROUP BY sede) ar ON ar.sede = s.sede_id
               WHERE 1 = 1"
              . $this->sede('s.sede_id') . "
               ORDER BY (IFNULL(bk.v,0) + IFNULL(ar.v,0)) DESC, s.sede_nombre",
-            [':d1' => $p['desde'], ':h1' => $p['hasta'], ':d2' => $p['desde'], ':h2' => $p['hasta']]);
+            [':d1' => $p['desde'], ':h1' => $p['hasta'], ':d2' => $p['desde'], ':h2' => $p['hasta'],
+             ':d3' => $p['desde'], ':h3' => $p['hasta']]);
 
         $r = [];
         foreach ($filas as $f) {
@@ -842,6 +862,22 @@ class insightsController
             [':d' => $p['desde'], ':h' => $p['hasta']]) as $f) {
             $r[] = ['modulo' => 'Arena', 'concepto' => $f['concepto'],
                     'n' => (int) $f['n'], 'valor' => (float) $f['v']];
+        }
+
+        /* Lo devuelto de reservas (migración 092), en negativo: así los
+           conceptos suman lo mismo que «Ingresos». */
+        if (insights_ve('arena')) {
+            $dv = $this->filas(
+                "SELECT COUNT(*) n, IFNULL(SUM(d.devolucion_valor), 0) v
+                   FROM dsa_devolucion d
+                   JOIN dsa_reserva r ON r.reserva_id = d.devolucion_reservaid
+                  WHERE d.devolucion_fecha BETWEEN :d AND :h"
+                 . $this->sede('r.reserva_sedeid'),
+                [':d' => $p['desde'], ':h' => $p['hasta']])[0] ?? ['n' => 0, 'v' => 0];
+            if ((int) $dv['n'] > 0) {
+                $r[] = ['modulo' => 'Arena', 'concepto' => 'Devoluciones de reservas',
+                        'n' => (int) $dv['n'], 'valor' => -(float) $dv['v']];
+            }
         }
 
         if (insights_ve('league'))
@@ -2437,6 +2473,20 @@ class insightsController
                           LEFT JOIN dsa_cliente   cl ON cl.cliente_id = r.reserva_clienteid
                          WHERE p.pago_estado = 'A' AND p.pago_fecha BETWEEN :d AND :h"
                      . $this->sede('r.reserva_sedeid');
+            /* Lo devuelto (migración 092), en negativo: la suma de la
+               pantalla coincide con «Ingresos». */
+            $ramas[] = "SELECT 'arena' modulo, d.devolucion_id id, d.devolucion_fecha fecha,
+                               s.sede_nombre sede,
+                               CONCAT('Devolución · ', i.instalacion_nombre) concepto,
+                               cl.cliente_nombre quien,
+                               -d.devolucion_valor valor, d.devolucion_referencia referencia
+                          FROM dsa_devolucion d
+                          JOIN dsa_reserva r      ON r.reserva_id = d.devolucion_reservaid
+                          LEFT JOIN dsa_instalacion i ON i.instalacion_id = r.reserva_instalacionid
+                          LEFT JOIN general_sede  s  ON s.sede_id = r.reserva_sedeid
+                          LEFT JOIN dsa_cliente   cl ON cl.cliente_id = r.reserva_clienteid
+                         WHERE d.devolucion_fecha BETWEEN :d AND :h"
+                     . $this->sede('r.reserva_sedeid');
         }
 
         if (isset($ve['league']) && ($modulo === '' || $modulo === 'league')) {
@@ -2599,6 +2649,353 @@ class insightsController
         return $cambios;
     }
 
+    /*==============  Ingresos del mes  ==============*/
+    /*
+    | Lo cobrado a los alumnos en un mes, en bloques: un bloque por rubro y,
+    | las pensiones, uno por sede y lugar de entrenamiento. Cada cobro lleva
+    | su importe en la columna de su forma de pago (efectivo, Banco de Loja,
+    | Banco Pichincha…). Es el reporte que la escuela armaba a mano en Excel.
+    |
+    |
+    | QUÉ ES UN COBRO DEL MES
+    |
+    | El dinero que entró en el mes, con la fecha en que entró:
+    |   · El pago (alumno_pago, estado C o P) por lo que se pagó AL REGISTRARLO,
+    |     en su pago_fecha. pago_valor no sirve tal cual: cada abono posterior
+    |     se le suma. Lo inicial se calcula como en el consolidado de pagos de
+    |     Fútbol (reporteController::datosPagos): total menos el saldo que
+    |     quedaba antes del primer abono. Así las dos pantallas cuadran.
+    |   · Cada abono (alumno_pago_transaccion, estado C) en su propia fecha y
+    |     con su propia forma de pago.
+    | Quedan fuera los eliminados (E) y los justificados (J), que valen 0.
+    |
+    |
+    | LA SEDE Y EL LUGAR
+    |
+    | La sede es pago_sedeid, la de donde se cobró, igual que en el resto de
+    | Insights, y respeta las sedes del usuario. El lugar de entrenamiento es
+    | el del horario del alumno —cada alumno tiene uno como máximo—; es el de
+    | hoy, no el del día del pago, porque el horario no guarda historia.
+    */
+
+    /** Orden de los bloques por rubro, el del reporte de la escuela. Las pensiones van al final. */
+    private const RUBROS_INGRESOS_MES = ['RPC', 'RIN', 'RKE', 'RNU', 'ROT', 'RPE'];
+
+    /** Mes pedido como «AAAA-MM»; el actual si no es válido o es futuro. */
+    public function mesIngresos(?string $mes): array
+    {
+        $hoy = new \DateTimeImmutable('first day of this month');
+        $d = ($mes !== null && preg_match('~^(\d{4})-(\d{2})$~', $mes, $m)
+              && (int) $m[1] >= 2000 && (int) $m[2] >= 1 && (int) $m[2] <= 12)
+            ? new \DateTimeImmutable(sprintf('%04d-%02d-01', (int) $m[1], (int) $m[2]))
+            : $hoy;
+        if ($d > $hoy) { $d = $hoy; }
+        return $this->periodo($d->format('Y-m-01'), $d->format('Y-m-t'));
+    }
+
+    /**
+     * Sedes que el usuario puede elegir en el filtro: las suyas y activas.
+     * Una sede inactiva no se ofrece (2026-11-24); lo cobrado en ella sigue
+     * saliendo con «Todas».
+     */
+    public function sedesIngresos(): array
+    {
+        return $this->filas(
+            "SELECT s.sede_id id, s.sede_nombre nombre
+               FROM general_sede s
+              WHERE s.sede_estado = 'A'"
+             . $this->sede('s.sede_id') . "
+              ORDER BY s.sede_id");
+    }
+
+    /*
+    | LAS COLUMNAS DE DINERO
+    |
+    | Ingresos y egresos usan catálogos distintos (forma_pago y
+    | forma_entregaingreso), pero el reporte los pone en las MISMAS columnas:
+    | lo que entró y salió por Banco de Loja va en «Banco de Loja», sea de un
+    | pago de alumno o de un egreso. Así cada bloque cuadra por banco.
+    | Un código que no esté aquí abre su propia columna con su nombre.
+    */
+    private const COLUMNA_DE_FORMA = [
+        'FEF' => 'EFE', 'FTL' => 'BLO', 'FTP' => 'BPI', 'FTR' => 'TRA', 'FTC' => 'TAR',   /* pagos de alumnos */
+        'EIE' => 'EFE', 'EBL' => 'BLO', 'EBP' => 'BPI', 'EIT' => 'TRA', 'EIC' => 'CHE', 'EID' => 'DES',   /* egresos */
+    ];
+    private const COLUMNAS = [
+        'EFE' => 'Efectivo', 'BLO' => 'Banco de Loja', 'BPI' => 'Banco Pichincha',
+        'TRA' => 'Transferencia', 'TAR' => 'Tarjeta', 'CHE' => 'Cheque', 'DES' => 'Descuento',
+    ];
+
+    /**
+     * Los cobros y los egresos del mes, en bloques.
+     *
+     * Egresos: balance_egreso activos del mes (egreso_fechapago), en el
+     * bloque que eligió quien los registró (egreso_rubroid y, para
+     * pensiones, egreso_lugarid; migración 094). Sin bloque van a «Egresos
+     * generales». Cada bloque da ingresos, egresos y neto.
+     *
+     * @param array $p    periodo de mesIngresos()
+     * @param int   $sede 0 = todas las del usuario
+     */
+    public function ingresosDelMes(array $p, int $sede = 0): array
+    {
+        $vacio = ['bloques' => [], 'columnas' => [], 'totales' => [], 'egresosTotales' => [],
+                  'total' => 0.0, 'egresosTotal' => 0.0, 'neto' => 0.0,
+                  'cobros' => 0, 'alumnos' => 0, 'nEgresos' => 0];
+        if (!insights_ve('basketball')) { return $vacio; }
+
+        $params = [':d1' => $p['desde'], ':h1' => $p['hasta'], ':d2' => $p['desde'], ':h2' => $p['hasta']];
+        $filtroSede = $this->sede('p.pago_sedeid');
+        if ($sede > 0) {
+            $filtroSede .= ' AND p.pago_sedeid = :s1';
+            $params[':s1'] = $sede;
+            $params[':s2'] = $sede;
+        }
+        $filtroSede2 = str_replace(':s1', ':s2', $filtroSede);
+
+        /* El lugar de entrenamiento del alumno (uno como máximo). */
+        $lugar = "LEFT JOIN (SELECT ah.asignahorario_alumnoid alumno, MIN(d.detalle_lugarid) lugar
+                               FROM asistencia_asignahorario ah
+                               JOIN asistencia_horario_detalle d ON d.detalle_horarioid = ah.asignahorario_horarioid
+                              GROUP BY ah.asignahorario_alumnoid) LA ON LA.alumno = a.alumno_id
+                  LEFT JOIN asistencia_lugar l ON l.lugar_id = LA.lugar
+                  LEFT JOIN torneo_torneo tor ON tor.torneo_id = p.pago_campeonatoid";
+
+        /* El campeonato de cada cobro (rubro RPC): el bloque «Campeonato» se
+           agrupa por él (2026-11-24). */
+        $comunes = "a.alumno_identificacion ident,
+                    CONCAT_WS(' ', a.alumno_primernombre, NULLIF(a.alumno_segundonombre, ''),
+                              a.alumno_apellidopaterno, NULLIF(a.alumno_apellidomaterno, '')) alumno,
+                    p.pago_sedeid sede_id, s.sede_nombre sede, p.pago_rubroid rubro,
+                    l.lugar_nombre lugar, p.pago_campeonatoid campeonato_id, tor.torneo_nombre campeonato";
+
+        $filas = $this->filas(
+            "SELECT * FROM (
+                SELECT 'pago' tipo, p.pago_id id, $comunes,
+                       p.pago_fecha fecha, p.pago_fecharegistro registro, p.pago_periodo periodo,
+                       p.pago_formapagoid forma,
+                       ROUND((p.pago_saldo + p.pago_valor) - IFNULL(pt.transaccion_valorcalculado, p.pago_saldo), 2) valor
+                  FROM alumno_pago p
+                  JOIN sujeto_alumno a ON a.alumno_id = p.pago_alumnoid
+                  JOIN general_sede  s ON s.sede_id   = p.pago_sedeid
+                  LEFT JOIN (SELECT transaccion_pagoid, MIN(transaccion_id) primero
+                               FROM alumno_pago_transaccion WHERE transaccion_estado = 'C'
+                              GROUP BY transaccion_pagoid) t1 ON t1.transaccion_pagoid = p.pago_id
+                  LEFT JOIN alumno_pago_transaccion pt ON pt.transaccion_id = t1.primero
+                  $lugar
+                 WHERE p.pago_estado IN ('C','P') AND p.pago_fecha BETWEEN :d1 AND :h1" . $filtroSede . "
+                UNION ALL
+                SELECT 'abono', t.transaccion_id, $comunes,
+                       t.transaccion_fecha, t.transaccion_fecharegistro, t.transaccion_periodo,
+                       t.transaccion_formapagoid, t.transaccion_valor
+                  FROM alumno_pago_transaccion t
+                  JOIN alumno_pago   p ON p.pago_id   = t.transaccion_pagoid
+                  JOIN sujeto_alumno a ON a.alumno_id = p.pago_alumnoid
+                  JOIN general_sede  s ON s.sede_id   = p.pago_sedeid
+                  $lugar
+                 WHERE t.transaccion_estado = 'C' AND p.pago_estado <> 'E'
+                   AND t.transaccion_fecha BETWEEN :d2 AND :h2" . $filtroSede2 . "
+             ) x
+             WHERE x.valor > 0
+             ORDER BY x.fecha, x.alumno, x.id",
+            $params);
+
+        /*
+        | Los egresos. Si la base todavía no tiene la 094, el egreso no tiene
+        | bloque: se leen igual y van todos a «Egresos generales», en vez de
+        | romper el reporte entero por una columna que falta.
+        */
+        $con094 = (int) $this->escalar(
+            "SELECT COUNT(*) FROM information_schema.COLUMNS
+              WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'balance_egreso'
+                AND COLUMN_NAME IN ('egreso_rubroid', 'egreso_lugarid')") === 2;
+        $pe = [':d3' => $p['desde'], ':h3' => $p['hasta']];
+        $filtroEgreso = $this->sede('e.egreso_sedeid');
+        if ($sede > 0) {
+            $filtroEgreso .= ' AND e.egreso_sedeid = :s3';
+            $pe[':s3'] = $sede;
+        }
+        $egresos = $this->filas(
+            "SELECT e.egreso_id id, e.egreso_sedeid sede_id, s.sede_nombre sede, e.egreso_fechapago fecha,
+                    e.egreso_empresa detalle, e.egreso_descripcion descripcion, e.egreso_monto valor,
+                    e.egreso_formaentrega forma, e.egreso_concepto concepto, "
+             . ($con094 ? "e.egreso_rubroid rubro, l.lugar_nombre lugar" : "NULL rubro, NULL lugar") . "
+               FROM balance_egreso e
+               JOIN general_sede s ON s.sede_id = e.egreso_sedeid "
+             . ($con094 ? "LEFT JOIN asistencia_lugar l ON l.lugar_id = e.egreso_lugarid" : "") . "
+              WHERE e.egreso_estado = 'A' AND e.egreso_monto > 0
+                AND e.egreso_fechapago BETWEEN :d3 AND :h3" . $filtroEgreso . "
+              ORDER BY e.egreso_fechapago, e.egreso_id",
+            $pe);
+
+        if (!$filas && !$egresos) { return $vacio; }
+
+        /* Nombres del catálogo: ni el rubro, ni la forma, ni el concepto se escriben aquí. */
+        $catalogo = [];
+        foreach ($this->filas(
+            "SELECT c.catalogo_valor v, c.catalogo_descripcion d
+               FROM general_tabla_catalogo c
+               JOIN general_tabla t ON t.tabla_id = c.catalogo_tablaid
+              WHERE t.tabla_nombre IN ('rubros', 'forma_pago', 'forma_entregaingreso', 'balance_egreso')") as $c) {
+            $catalogo[$c['v']] = $c['d'];
+        }
+        $columna = static fn(string $forma): string => self::COLUMNA_DE_FORMA[$forma] ?? $forma;
+
+        /*
+        | LAS PENSIONES, POR SEDE Y LUGAR
+        |
+        | Una sede se parte por lugar sólo si sus pensiones del mes vienen de
+        | más de un lugar. El lugar se agrupa por NOMBRE: el mismo campo puede
+        | estar dado de alta en dos sedes (CANCHA ESTADIO ANGELICAL es el 6 de
+        | una y el 10 de otra) y no debe salir dos veces.
+        */
+        $nombreLugar = static fn(?string $l): string => $l === null ? '' : mb_strtoupper(trim($l));
+        $lugaresPorSede = [];
+        foreach ($filas as $f) {
+            if ($f['rubro'] === 'RPE') {
+                $lugaresPorSede[$f['sede_id']][$nombreLugar($f['lugar'])] = true;
+            }
+        }
+        $indiceLugar = [];
+        $bloquePension = function (int $sedeId, string $sedeNombre, ?string $lugar) use (&$lugaresPorSede, &$indiceLugar, $nombreLugar): array {
+            $partir = count($lugaresPorSede[$sedeId] ?? []) > 1;
+            if (!$partir) {
+                return ['RPE-' . $sedeId, 'Pensiones · ' . $sedeNombre, null];
+            }
+            $n = $nombreLugar($lugar);
+            $indiceLugar[$n] = $indiceLugar[$n] ?? count($indiceLugar) + 1;
+            return ['RPE-' . $sedeId . '-' . $indiceLugar[$n], 'Pensiones · ' . $sedeNombre,
+                    $n === '' ? 'Sin lugar asignado' : trim((string) $lugar)];
+        };
+
+        $bloques = [];
+        $nuevo = static fn(string $clave, string $rubro, string $titulo, ?string $lugar): array => [
+            'clave' => $clave, 'rubro' => $rubro, 'titulo' => $titulo, 'lugar' => $lugar,
+            'filas' => [], 'egresos' => [], 'formas' => [], 'egresosFormas' => [],
+            'total' => 0.0, 'egresosTotal' => 0.0, 'neto' => 0.0,
+            'grupos' => [],   /* sólo Campeonato: un grupo por campeonato */
+        ];
+
+        $totales = [];
+        $alumnos = [];
+        foreach ($filas as $f) {
+            $valor = round((float) $f['valor'], 2);
+            $col   = $columna((string) $f['forma']);
+            $totales[$col] = ($totales[$col] ?? 0) + $valor;
+            $alumnos[$f['ident'] . '|' . $f['alumno']] = true;
+
+            if ($f['rubro'] === 'RPE') {
+                [$clave, $titulo, $sub] = $bloquePension((int) $f['sede_id'], (string) $f['sede'], $f['lugar']);
+            } else {
+                [$clave, $titulo, $sub] = [(string) $f['rubro'], $catalogo[$f['rubro']] ?? (string) $f['rubro'], null];
+            }
+            $bloques[$clave] ??= $nuevo($clave, (string) $f['rubro'], $titulo, $sub);
+            $bloques[$clave]['filas'][] = [
+                'tipo'     => $f['tipo'],
+                'id'       => (int) $f['id'],
+                'ident'    => (string) $f['ident'],
+                'alumno'   => (string) $f['alumno'],
+                'sede'     => (string) $f['sede'],
+                'fecha'    => (string) $f['fecha'],
+                'registro' => (string) $f['registro'],
+                'periodo'  => trim((string) $f['periodo']),
+                'rubro'    => $catalogo[$f['rubro']] ?? (string) $f['rubro'],
+                'forma'    => $catalogo[$f['forma']] ?? (string) $f['forma'],
+                'col'      => $col,
+                'valor'    => $valor,
+                'campeonato' => $f['rubro'] === 'RPC' ? trim((string) ($f['campeonato'] ?? '')) ?: 'Sin campeonato' : '',
+            ];
+            $bloques[$clave]['formas'][$col] = ($bloques[$clave]['formas'][$col] ?? 0) + $valor;
+            $bloques[$clave]['total'] += $valor;
+
+            /* Campeonato: cada cobro en el grupo de su campeonato. */
+            if ($f['rubro'] === 'RPC') {
+                $g = 'C' . (int) ($f['campeonato_id'] ?? 0);
+                $bloques[$clave]['grupos'][$g] ??= ['nombre' => trim((string) ($f['campeonato'] ?? '')) ?: 'Sin campeonato',
+                                                    'filas' => [], 'formas' => [], 'total' => 0.0];
+                $bloques[$clave]['grupos'][$g]['filas'][] = end($bloques[$clave]['filas']);
+                $bloques[$clave]['grupos'][$g]['formas'][$col] = ($bloques[$clave]['grupos'][$g]['formas'][$col] ?? 0) + $valor;
+                $bloques[$clave]['grupos'][$g]['total'] += $valor;
+            }
+        }
+
+        $egresosTotales = [];
+        foreach ($egresos as $e) {
+            $valor = round((float) $e['valor'], 2);
+            $col   = $columna((string) $e['forma']);
+            $egresosTotales[$col] = ($egresosTotales[$col] ?? 0) + $valor;
+
+            $rubro = (string) ($e['rubro'] ?? '');
+            if ($rubro === 'RPE') {
+                [$clave, $titulo, $sub] = $bloquePension((int) $e['sede_id'], (string) $e['sede'], $e['lugar']);
+            } elseif ($rubro !== '' && in_array($rubro, self::RUBROS_INGRESOS_MES, true)) {
+                [$clave, $titulo, $sub] = [$rubro, $catalogo[$rubro] ?? $rubro, null];
+            } else {
+                [$clave, $titulo, $sub, $rubro] = ['EGR', 'Egresos generales', null, 'EGR'];
+            }
+            $bloques[$clave] ??= $nuevo($clave, $rubro, $titulo, $sub);
+            $bloques[$clave]['egresos'][] = [
+                'id'          => (int) $e['id'],
+                'sede'        => (string) $e['sede'],
+                'fecha'       => (string) $e['fecha'],
+                'detalle'     => trim((string) $e['detalle']),
+                'descripcion' => trim((string) $e['descripcion']),
+                'concepto'    => $catalogo[$e['concepto']] ?? (string) $e['concepto'],
+                'forma'       => $catalogo[$e['forma']] ?? (string) $e['forma'],
+                'col'         => $col,
+                'valor'       => $valor,
+            ];
+            $bloques[$clave]['egresosFormas'][$col] = ($bloques[$clave]['egresosFormas'][$col] ?? 0) + $valor;
+            $bloques[$clave]['egresosTotal'] += $valor;
+        }
+
+        foreach ($bloques as &$b) {
+            $b['total']        = round($b['total'], 2);
+            $b['egresosTotal'] = round($b['egresosTotal'], 2);
+            $b['neto']         = round($b['total'] - $b['egresosTotal'], 2);
+            /* Los campeonatos, del que más recaudó al que menos. */
+            uasort($b['grupos'], static fn(array $x, array $y): int => [$y['total'], $x['nombre']] <=> [$x['total'], $y['nombre']]);
+            foreach ($b['grupos'] as &$g) { $g['total'] = round($g['total'], 2); }
+            unset($g);
+            $b['grupos'] = array_values($b['grupos']);
+        }
+        unset($b);
+
+        /* Orden: rubros como en el reporte de la escuela; pensiones por sede y
+           lugar; los egresos sin bloque, al final. */
+        $orden = array_flip(self::RUBROS_INGRESOS_MES) + ['EGR' => 99];
+        uasort($bloques, static function (array $a, array $b) use ($orden): int {
+            return [$orden[$a['rubro']] ?? 50, $a['titulo'], $a['lugar'] ?? '']
+               <=> [$orden[$b['rubro']] ?? 50, $b['titulo'], $b['lugar'] ?? ''];
+        });
+
+        /* Columnas: las conocidas en su orden, luego las que aparezcan. */
+        $usadas = array_keys($totales + $egresosTotales);
+        $columnas = [];
+        foreach (self::COLUMNAS as $k => $etq) {
+            if (in_array($k, $usadas, true)) { $columnas[$k] = $etq; }
+        }
+        foreach ($usadas as $k) {
+            if (!isset($columnas[$k])) { $columnas[$k] = $catalogo[$k] ?? $k; }
+        }
+
+        $total        = round(array_sum($totales), 2);
+        $egresosTotal = round(array_sum($egresosTotales), 2);
+
+        return [
+            'bloques'        => array_values($bloques),
+            'columnas'       => $columnas,
+            'totales'        => array_map(static fn($v) => round($v, 2), $totales),
+            'egresosTotales' => array_map(static fn($v) => round($v, 2), $egresosTotales),
+            'total'          => $total,
+            'egresosTotal'   => $egresosTotal,
+            'neto'           => round($total - $egresosTotal, 2),
+            'cobros'         => count($filas),
+            'alumnos'        => count($alumnos),
+            'nEgresos'       => count($egresos),
+        ];
+    }
+
     /*==============  Catalogo de reportes  ==============*/
     /*
     | El catalogo vive en codigo y no en una tabla, a proposito: cada entrada
@@ -2672,6 +3069,16 @@ class insightsController
                 'icono'    => 'fas fa-user-graduate',
                 'vista'    => 'becas',
                 'url'      => APP_URL . 'becas/',
+                'externo'  => false,
+            ],
+
+            'ingresosMes' => [
+                'titulo'   => 'Ingresos del mes',
+                'resumen'  => 'Lo cobrado a los alumnos y lo gastado en el mes, por bloque (campeonatos, inscripciones, kits, uniformes y pensiones por sede), en efectivo y cada banco, con el neto.',
+                'categoria'=> 'Financiero',
+                'icono'    => 'fas fa-cash-register',
+                'vista'    => 'ingresosMes',
+                'url'      => APP_URL . 'ingresosMes/',
                 'externo'  => false,
             ],
 
@@ -2923,6 +3330,58 @@ class insightsController
                     'filas'     => $filas,
                 ];
 
+            /* El Excel (.xlsx), el CSV y el PDF de este reporte tienen la forma
+               del Excel de la escuela (views/inc/exportar-ingresosMes.php), que lee
+               'informe'. 'filas' queda como lista plana de movimientos: es
+               la que cuenta la auditoría. La sede llega en ?sede= y sólo vale
+               si es una de las del usuario, como en la pantalla. El periodo
+               es siempre un mes. */
+            case 'ingresosMes':
+                $pm = $this->mesIngresos(substr($p['desde'], 0, 7));
+                $sedeId = (int) ($_GET['sede'] ?? 0);
+                $sedeNombre = 'Todas las sedes';
+                $ok = false;
+                foreach ($this->sedesIngresos() as $s) {
+                    if ((int) $s['id'] === $sedeId) { $sedeNombre = (string) $s['nombre']; $ok = true; }
+                }
+                if (!$ok) { $sedeId = 0; }
+                $r  = $this->ingresosDelMes($pm, $sedeId);
+                $MESES = [1 => 'Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio', 'Julio', 'Agosto',
+                          'Septiembre', 'Octubre', 'Noviembre', 'Diciembre'];
+                $dec = static fn(float $v): string => number_format($v, 2, '.', '');
+                $dia = static fn(string $f): string => $f !== '' ? date('d/m/Y', strtotime($f)) : '';
+                $filas = [];
+                foreach ($r['bloques'] as $b) {
+                    $bloque = $b['titulo'] . ($b['lugar'] !== null ? ' · ' . $b['lugar'] : '');
+                    foreach ($b['filas'] as $f) {
+                        $filas[] = [$bloque, $f['tipo'] === 'abono' ? 'Abono' : 'Ingreso', $f['sede'], $f['ident'], $f['alumno'],
+                                    $dia($f['fecha']), $dia($f['registro']), $f['periodo'],
+                                    $f['rubro'] . ($f['campeonato'] !== '' ? ' · ' . $f['campeonato'] : ''),
+                                    $f['forma'], $dec($f['valor'])];
+                    }
+                    foreach ($b['egresos'] as $e) {
+                        $filas[] = [$bloque, 'Egreso', $e['sede'], '',
+                                    $e['detalle'] . ($e['descripcion'] !== '' ? ' · ' . $e['descripcion'] : ''),
+                                    $dia($e['fecha']), '', '', $e['concepto'], $e['forma'], $dec(-$e['valor'])];
+                    }
+                }
+                return [
+                    'informe'   => [
+                        'r'            => $r,
+                        'mes'          => $MESES[(int) substr($pm['desde'], 5, 2)] . ' ' . substr($pm['desde'], 0, 4),
+                        'sedeId'       => $sedeId,
+                        'sede'         => $sedeNombre,
+                        'organizacion' => function_exists('ds_nombre_organizacion') ? ds_nombre_organizacion() : '',
+                    ],
+                    'titulo'    => 'Ingresos y egresos del mes ' . substr($pm['desde'], 5, 2) . '/' . substr($pm['desde'], 0, 4),
+                    'vista'     => 'ingresosMes',
+                    'cabeceras' => ['Bloque', 'Tipo', 'Sede', 'Identificación', 'Alumno / Detalle', 'Fecha', 'F. registro',
+                                    'Periodo', 'Rubro / Concepto', 'Forma de pago', 'Importe'],
+                    'tipos'     => ['texto', 'texto', 'texto', 'texto', 'texto', 'texto', 'texto',
+                                    'texto', 'texto', 'texto', 'dinero'],
+                    'filas'     => $filas,
+                ];
+
             case 'conceptos':
                 $filas = [];
                 foreach ($this->ingresosPorConcepto($p) as $c) {
@@ -3019,6 +3478,7 @@ class insightsController
             'financiero'    => 'Ingresos por sede',
             'conceptos'     => 'Ingresos por concepto',
             'becas'         => 'Becas y descuentos',
+            'ingresosMes'   => 'Ingresos del mes',
             'retencion'     => 'Retención por cohorte',
             'cartera'       => 'Cartera por sede',
             'instalaciones' => 'Ocupación por instalación',
