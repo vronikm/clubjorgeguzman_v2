@@ -6,7 +6,7 @@
 	$rolid = rol_actual();
 
 	$campo = static fn(string $n) => isset($_GET[$n]) && is_string($_GET[$n]) ? $insAlumno->limpiarCadena($_GET[$n]) : '';
-	$alumno_identificacion  = $campo('alumno_identificacion');
+	$alumno_identificacion  = '';   /* el campo salió del formulario (la cédula se busca con «Filtrar la lista…»): sin él, nada filtra a escondidas */
 	$alumno_primernombre    = $campo('alumno_nombre1');
 	$alumno_apellidopaterno = $campo('alumno_apellido1');
 	$alumno_anio            = preg_match('/^\d{4}$/', $campo('alumno_anio')) ? $campo('alumno_anio') : '';
@@ -87,31 +87,10 @@
 						</div>
 					</div>
 					<div class="card-body">
+						<?php /* Orden pedido (2026-11-27): Sede, Estado, Año, Apellido,
+						         Nombre y Horario. Identificación sale del formulario: la
+						         cédula se busca con «Filtrar la lista…». */ ?>
 						<div class="row g-3">
-							<div class="col-12 col-sm-6 col-lg-4 col-xl">
-								<label for="alumno_identificacion" class="form-label">Identificación</label>
-								<input type="text" class="form-control" id="alumno_identificacion" name="alumno_identificacion" inputmode="numeric" placeholder="Cédula" value="<?php echo $h($alumno_identificacion); ?>">
-							</div>
-							<div class="col-6 col-sm-6 col-lg-4 col-xl">
-								<label for="alumno_apellido1" class="form-label">Apellido paterno</label>
-								<input type="text" class="form-control" id="alumno_apellido1" name="alumno_apellido1" placeholder="Primer apellido" value="<?php echo $h($alumno_apellidopaterno); ?>">
-							</div>
-							<div class="col-6 col-sm-6 col-lg-4 col-xl">
-								<label for="alumno_nombre1" class="form-label">Primer nombre</label>
-								<input type="text" class="form-control" id="alumno_nombre1" name="alumno_nombre1" placeholder="Primer nombre" value="<?php echo $h($alumno_primernombre); ?>">
-							</div>
-							<div class="col-6 col-sm-3 col-lg-2 col-xl-1">
-								<label for="alumno_anio" class="form-label">Año</label>
-								<input type="text" class="form-control" id="alumno_anio" name="alumno_anio" inputmode="numeric" maxlength="4" pattern="[0-9]{4}" placeholder="2014" value="<?php echo $h($alumno_anio); ?>">
-							</div>
-							<div class="col-6 col-sm-3 col-lg-2 col-xl">
-								<label for="alumno_estado" class="form-label">Estado</label>
-								<select class="form-select" id="alumno_estado" name="alumno_estado">
-									<?php foreach ($ESTADOS as $valor => $texto): ?>
-										<option value="<?php echo $valor; ?>" <?php echo $alumno_estado === $valor ? 'selected' : ''; ?>><?php echo $texto; ?></option>
-									<?php endforeach; ?>
-								</select>
-							</div>
 							<div class="col-12 col-sm-6 col-lg-4 col-xl">
 								<label for="alumno_sedeid" class="form-label">Sede</label>
 								<select class="form-select" id="alumno_sedeid" name="alumno_sedeid">
@@ -121,6 +100,26 @@
 									<?php echo $opcionesSede; ?>
 								</select>
 							</div>
+							<div class="col-6 col-sm-3 col-lg-2 col-xl">
+								<label for="alumno_estado" class="form-label">Estado</label>
+								<select class="form-select" id="alumno_estado" name="alumno_estado">
+									<?php foreach ($ESTADOS as $valor => $texto): ?>
+										<option value="<?php echo $valor; ?>" <?php echo $alumno_estado === $valor ? 'selected' : ''; ?>><?php echo $texto; ?></option>
+									<?php endforeach; ?>
+								</select>
+							</div>
+							<div class="col-6 col-sm-3 col-lg-2 col-xl-1">
+								<label for="alumno_anio" class="form-label">Año</label>
+								<input type="text" class="form-control" id="alumno_anio" name="alumno_anio" inputmode="numeric" maxlength="4" pattern="[0-9]{4}" placeholder="2014" value="<?php echo $h($alumno_anio); ?>">
+							</div>
+							<div class="col-6 col-sm-6 col-lg-4 col-xl">
+								<label for="alumno_apellido1" class="form-label">Apellido paterno</label>
+								<input type="text" class="form-control" id="alumno_apellido1" name="alumno_apellido1" placeholder="Primer apellido" value="<?php echo $h($alumno_apellidopaterno); ?>">
+							</div>
+							<div class="col-6 col-sm-6 col-lg-4 col-xl">
+								<label for="alumno_nombre1" class="form-label">Primer nombre</label>
+								<input type="text" class="form-control" id="alumno_nombre1" name="alumno_nombre1" placeholder="Primer nombre" value="<?php echo $h($alumno_primernombre); ?>">
+							</div>
 							<div class="col-6 col-sm-6 col-lg-4 col-xl">
 								<label for="alumno_horario" class="form-label">Horario</label>
 								<select class="form-select" id="alumno_horario" name="alumno_horario">
@@ -129,7 +128,7 @@
 									<?php endforeach; ?>
 								</select>
 							</div>
-							<div class="col-12 col-sm-6 col-lg-4 col-xl-auto d-flex align-items-end">
+							<div class="col-6 col-sm-6 col-lg-4 col-xl-auto d-flex align-items-end">
 								<div class="w-100">
 									<?php echo ds_boton_buscar(); ?>
 								</div>
