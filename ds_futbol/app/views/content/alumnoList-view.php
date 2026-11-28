@@ -44,6 +44,21 @@
 
 	$h = static fn($v) => htmlspecialchars(html_entity_decode((string)$v, ENT_QUOTES | ENT_HTML5, 'UTF-8'), ENT_QUOTES, 'UTF-8');
 	$ESTADOS = ['A' => 'Activos', 'I' => 'Inactivos', 'T' => 'Todos'];
+
+	/* En el celular los criterios van plegados y su cabecera dice lo que se
+	   está buscando: «JIPIRO · Activos · 2014». $filtrosExtra cuenta los que
+	   se apartan de lo de siempre (todas las sedes, activos). */
+	$nombreSede = 'Todas las sedes';
+	if ($alumno_sedeid !== 0 && preg_match('/<option[^>]*value=["\']?' . $alumno_sedeid . '["\'\s>][^>]*>([^<]*)</', $opcionesSede, $mSede)) {
+		$nombreSede = trim(html_entity_decode($mSede[1], ENT_QUOTES | ENT_HTML5, 'UTF-8'));
+	}
+	$resumenFiltros = [$nombreSede, $ESTADOS[$alumno_estado]];
+	if ($alumno_anio !== '')            { $resumenFiltros[] = $alumno_anio; }
+	if ($alumno_apellidopaterno !== '') { $resumenFiltros[] = $alumno_apellidopaterno; }
+	if ($alumno_primernombre !== '')    { $resumenFiltros[] = $alumno_primernombre; }
+	if ($alumno_horario !== '')         { $resumenFiltros[] = $HORARIOS[$alumno_horario]; }
+	$filtrosExtra = ($alumno_sedeid !== 0) + ($alumno_estado !== 'A') + ($alumno_anio !== '') + ($alumno_apellidopaterno !== '')
+	              + ($alumno_primernombre !== '') + ($alumno_horario !== '');
 ?>
 
 <?php
@@ -79,14 +94,24 @@
 			<div class="container-fluid ds-crud">
 
 				<!-- =================== Criterios de búsqueda =================== -->
-				<form action="<?php echo APP_URL."alumnoList/" ?>" method="GET" autocomplete="off" class="card ds-alumnos__filtros">
+				<form action="<?php echo APP_URL."alumnoList/" ?>" method="GET" autocomplete="off" class="card ds-alumnos__filtros" id="alumnosFiltros">
 					<div class="card-header">
-						<h3 class="card-title"><i class="fas fa-filter me-2" aria-hidden="true"></i>Criterios de búsqueda</h3>
-						<div class="card-tools">
+						<?php /* Celular y tableta: la cabecera es un botón que despliega los
+						         criterios y, plegada, dice qué se está buscando. */ ?>
+						<button type="button" class="ds-alumnos__filtros-toggle d-lg-none" id="alumnosFiltrosToggle" aria-expanded="false" aria-controls="alumnosFiltrosCuerpo">
+							<span class="ds-alumnos__filtros-titulo">
+								<i class="fas fa-filter" aria-hidden="true"></i>Criterios de búsqueda
+								<?php if ($filtrosExtra > 0): ?><span class="badge text-bg-primary"><?php echo $filtrosExtra; ?></span><?php endif; ?>
+							</span>
+							<span class="ds-alumnos__filtros-resumen"><?php echo $h(implode(' · ', $resumenFiltros)); ?></span>
+							<i class="fas fa-chevron-down ds-alumnos__filtros-flecha" aria-hidden="true"></i>
+						</button>
+						<h3 class="card-title d-none d-lg-block"><i class="fas fa-filter me-2" aria-hidden="true"></i>Criterios de búsqueda</h3>
+						<div class="card-tools d-none d-lg-block">
 							<button type="button" class="btn btn-tool" data-lte-toggle="card-collapse" title="Plegar o desplegar" aria-label="Plegar o desplegar"><i data-lte-icon="expand" class="fas fa-plus"></i><i data-lte-icon="collapse" class="fas fa-minus"></i></button>
 						</div>
 					</div>
-					<div class="card-body">
+					<div class="card-body" id="alumnosFiltrosCuerpo">
 						<?php /* Orden pedido (2026-11-27): Sede, Estado, Año, Apellido,
 						         Nombre y Horario. Identificación sale del formulario: la
 						         cédula se busca con «Filtrar la lista…». */ ?>
@@ -157,35 +182,24 @@
 					<div class="card-body">
 						<?php
 						/*
-						| Barra de resumen: Horario, en la MISMA fila que
-						| «Mostrar N» (DataTables la coloca ahí: layout.topStart, abajo).
-						| Antes eran dos filas sueltas encima de la tabla y «Mostrar» una
-						| tercera.
-						|
-						| Cada botón filtra con el formulario de búsqueda; pulsar el
-						| elegido vuelve a «Todos». «Sin horario» se destaca cuando hay
-						| alguno: es lo que hay que resolver.
+						| Barra del resultado: sólo «Sin horario» (2026-11-27; antes
+						| también «Con horario»), en la MISMA fila que «Mostrar N»
+						| (DataTables la coloca ahí: layout.topStart, abajo). Es lo que
+						| hay que resolver: filtra con el formulario de búsqueda y,
+						| pulsado otra vez, vuelve a «Todos».
 						*/
-						$hayHorario = $porHorario['S'] + $porHorario['N'] > 0;
+						$sinHorario = (int)$porHorario['N'];
+						$elegido    = $alumno_horario === 'N';
 						?>
-						<?php if ($hayHorario): ?>
+						<?php if ($sinHorario > 0 || $elegido): ?>
 						<div class="ds-alumnos__barra" id="alumnosBarra">
-							<?php if ($hayHorario): ?>
-							<div class="ds-alumnos__grupo" role="group" aria-label="Alumnos con y sin horario">
-								<span class="ds-alumnos__grupo-titulo"><i class="far fa-clock" aria-hidden="true"></i>Horario</span>
-								<?php foreach (['S' => 'Con horario', 'N' => 'Sin horario'] as $codigo => $texto):
-									$elegido = $alumno_horario === $codigo;
-									$n       = (int)$porHorario[$codigo];
-									$clase   = $elegido ? 'btn-primary' : ($codigo === 'N' && $n > 0 ? 'btn-outline-warning ds-alumnos__chip-alerta' : 'btn-outline-secondary'); ?>
-									<button type="button" class="btn btn-sm <?php echo $clase; ?> js-horario"
-									        data-horario="<?php echo $elegido ? '' : $codigo; ?>" aria-pressed="<?php echo $elegido ? 'true' : 'false'; ?>"
-									        title="<?php echo $elegido ? 'Ver todos' : 'Ver solo ' . mb_strtolower($texto, 'UTF-8'); ?>" <?php echo $n === 0 && !$elegido ? 'disabled' : ''; ?>>
-										<?php if ($codigo === 'N'): ?><i class="fas fa-exclamation-triangle me-1" aria-hidden="true"></i><?php endif; ?>
-										<?php echo $texto; ?><span class="badge <?php echo $elegido ? 'text-bg-light' : 'text-bg-secondary'; ?> ms-1"><?php echo $n; ?></span>
-									</button>
-								<?php endforeach; ?>
+							<div class="ds-alumnos__grupo">
+								<button type="button" class="btn btn-sm <?php echo $elegido ? 'btn-primary' : 'btn-outline-warning ds-alumnos__chip-alerta'; ?> js-horario"
+								        data-horario="<?php echo $elegido ? '' : 'N'; ?>" aria-pressed="<?php echo $elegido ? 'true' : 'false'; ?>"
+								        title="<?php echo $elegido ? 'Ver todos' : 'Ver solo los alumnos sin horario'; ?>">
+									<i class="fas fa-exclamation-triangle me-1" aria-hidden="true"></i>Sin horario<span class="badge <?php echo $elegido ? 'text-bg-light' : 'text-bg-secondary'; ?> ms-1"><?php echo $sinHorario; ?></span>
+								</button>
 							</div>
-							<?php endif; ?>
 						</div>
 						<?php endif; ?>
 						<table id="example1" class="table table-hover align-middle ds-crud__tabla" style="width:100%">
@@ -288,7 +302,15 @@
 			try { localStorage.setItem(CLAVE, String(nuevo)); } catch (err) {}
 		});
 
-		/* Resumen con / sin horario: filtra con el mismo formulario de búsqueda. */
+		/* Criterios plegados en el celular: la cabecera los despliega. */
+		var filtros = document.getElementById('alumnosFiltros');
+		var toggle  = document.getElementById('alumnosFiltrosToggle');
+		toggle.addEventListener('click', function () {
+			var abierto = filtros.classList.toggle('is-abierto');
+			toggle.setAttribute('aria-expanded', abierto ? 'true' : 'false');
+		});
+
+		/* «Sin horario»: filtra con el mismo formulario de búsqueda. */
 		document.querySelectorAll('.js-horario').forEach(function (b) {
 			b.addEventListener('click', function () {
 				var sel = document.getElementById('alumno_horario');
